@@ -14,6 +14,7 @@
  *  limitations under the License.
  */
 
+#[cfg(any(unix, windows))]
 use libloading::{Library, Symbol};
 use serde_json::Value;
 
@@ -25,6 +26,7 @@ use crate::plugin::PluginError;
 /// Holds loaded plugins, whether they are bundled
 /// or loaded from DSOs
 pub struct PluginContainer<T: PluginCategory + ?Sized> {
+    #[cfg(any(unix, windows))]
     libraries: Vec<Library>,
     plugins: Vec<<T as PluginCategory>::BoxType>,
 }
@@ -41,6 +43,7 @@ impl<T: PluginCategory + ?Sized> PluginContainer<T> {
 impl<T: PluginCategory + ?Sized> Drop for PluginContainer<T> {
     fn drop(&mut self) {
         self.plugins.clear();
+        #[cfg(any(unix, windows))]
         self.libraries.clear();
     }
 }
@@ -48,6 +51,7 @@ impl<T: PluginCategory + ?Sized> Drop for PluginContainer<T> {
 struct PluginLoader<'a, 'b, T: PluginCategory + ?Sized> {
     cfg: &'a Config,
     grammar: &'a mut Grammar<'b>,
+    #[cfg(any(unix, windows))]
     libraries: Vec<Library>,
     plugins: Vec<<T as PluginCategory>::BoxType>,
 }
@@ -81,6 +85,7 @@ fn make_system_specific_name(_s: &str) -> Option<String> {
     None
 }
 
+#[cfg(any(unix, windows))]
 fn system_specific_name(s: &str) -> Option<String> {
     if s.contains('.') {
         None
@@ -103,6 +108,7 @@ impl<'a, 'b, T: PluginCategory + ?Sized> PluginLoader<'a, 'b, T> {
         PluginLoader {
             cfg: config,
             grammar,
+            #[cfg(any(unix, windows))]
             libraries: Vec::new(),
             plugins: Vec::new(),
         }
@@ -119,6 +125,7 @@ impl<'a, 'b, T: PluginCategory + ?Sized> PluginLoader<'a, 'b, T> {
 
     pub fn freeze(self) -> PluginContainer<T> {
         PluginContainer {
+            #[cfg(any(unix, windows))]
             libraries: self.libraries,
             plugins: self.plugins,
         }
@@ -147,6 +154,7 @@ impl<'a, 'b, T: PluginCategory + ?Sized> PluginLoader<'a, 'b, T> {
         Ok(())
     }
 
+    #[cfg(any(unix, windows))]
     fn resolve_dso_names(&self, name: &str) -> Vec<String> {
         let mut resolved = self.cfg.resolve_paths(name.to_owned());
 
@@ -158,6 +166,12 @@ impl<'a, 'b, T: PluginCategory + ?Sized> PluginLoader<'a, 'b, T> {
         resolved
     }
 
+    #[cfg(not(any(unix, windows)))]
+    fn resolve_dso_names(&self, name: &str) -> Vec<String> {
+        self.cfg.resolve_paths(name.to_owned())
+    }
+
+    #[cfg(any(unix, windows))]
     fn try_load_library_from(candidates: &[String]) -> SudachiResult<(Library, &str)> {
         if candidates.is_empty() {
             return Err(SudachiError::PluginError(PluginError::InvalidDataFormat(
@@ -178,6 +192,7 @@ impl<'a, 'b, T: PluginCategory + ?Sized> PluginLoader<'a, 'b, T> {
         }))
     }
 
+    #[cfg(any(unix, windows))]
     fn load_plugin_from_dso(
         &mut self,
         candidates: &[String],
@@ -191,6 +206,21 @@ impl<'a, 'b, T: PluginCategory + ?Sized> PluginLoader<'a, 'b, T> {
         let plugin = load_fn();
         self.libraries.push(lib);
         plugin
+    }
+
+    // Platforms without dynamic library loading (e.g. WebAssembly) can only
+    // use plugins bundled with the binary.
+    #[cfg(not(any(unix, windows)))]
+    fn load_plugin_from_dso(
+        &mut self,
+        candidates: &[String],
+    ) -> SudachiResult<<T as PluginCategory>::BoxType> {
+        Err(SudachiError::PluginError(PluginError::InvalidDataFormat(
+            format!(
+                "DSO plugins are not supported on this platform: {:?}",
+                candidates
+            ),
+        )))
     }
 }
 
