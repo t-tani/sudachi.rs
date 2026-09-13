@@ -80,8 +80,14 @@ pub struct Lattice {
 }
 
 impl Lattice {
-    fn reset_vec<T>(data: &mut Vec<Vec<T>>, target: usize) {
-        for v in data.iter_mut() {
+    /// Clears the first `used` inner vectors and makes sure there are at least
+    /// `target` of them.
+    ///
+    /// Only the vectors which were used by the previous analysis can be non-empty,
+    /// so touching the rest of them (which can be many after a long input) is
+    /// not needed.
+    fn reset_vec<T>(data: &mut Vec<Vec<T>>, used: usize, target: usize) {
+        for v in data.iter_mut().take(used) {
             v.clear();
         }
         let cur_len = data.len();
@@ -96,9 +102,10 @@ impl Lattice {
     /// Prepare lattice for the next analysis of a sentence with the
     /// specified length (in codepoints)
     pub fn reset(&mut self, length: usize) {
-        Self::reset_vec(&mut self.ends, length + 1);
-        Self::reset_vec(&mut self.ends_full, length + 1);
-        Self::reset_vec(&mut self.indices, length + 1);
+        let used = self.size;
+        Self::reset_vec(&mut self.ends, used, length + 1);
+        Self::reset_vec(&mut self.ends_full, used, length + 1);
+        Self::reset_vec(&mut self.indices, used, length + 1);
         self.eos = None;
         self.size = length + 1;
         self.connect_bos();
