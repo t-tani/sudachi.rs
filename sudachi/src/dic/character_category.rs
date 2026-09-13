@@ -67,6 +67,12 @@ pub struct CharacterCategory {
     /// Plays well with [`std::slice::binary_search`], see [`get_category_types()`].
     /// This should be always true: `boundaries.len() + 1 == categories.len()`.
     categories: Vec<CategoryType>,
+
+    /// Direct lookup table for the Basic Multilingual Plane:
+    /// `categories[bmp[codepoint]]` is the category of the codepoint.
+    /// Empty if there are too many categories to be indexed by u8
+    /// (then the binary search over `boundaries` is used for everything).
+    bmp: Vec<u8>,
 }
 
 impl Default for CharacterCategory {
@@ -74,6 +80,7 @@ impl Default for CharacterCategory {
         CharacterCategory {
             boundaries: Vec::new(),
             categories: vec![CategoryType::DEFAULT],
+            bmp: Vec::new(),
         }
     }
 }
@@ -232,10 +239,36 @@ impl CharacterCategory {
         final_boundaries.shrink_to_fit();
         final_categories.shrink_to_fit();
 
+        let bmp = Self::compile_bmp(&final_boundaries, &final_categories);
+
         CharacterCategory {
             boundaries: final_boundaries,
             categories: final_categories,
+            bmp,
         }
+    }
+
+    const BMP_SIZE: usize = 0x10000;
+
+    /// Builds the direct lookup table for the BMP, see [`CharacterCategory::bmp`]
+    fn compile_bmp(boundaries: &[u32], categories: &[CategoryType]) -> Vec<u8> {
+        debug_assert_eq!(boundaries.len() + 1, categories.len());
+        if categories.len() > u8::MAX as usize {
+            return Vec::new();
+        }
+        let mut bmp = vec![0u8; Self::BMP_SIZE];
+        let mut start = 0usize;
+        for (i, &boundary) in boundaries.iter().enumerate() {
+            let end = (boundary as usize).min(Self::BMP_SIZE);
+            if start < end {
+                bmp[start..end].fill(i as u8);
+            }
+            start = end;
+        }
+        if start < Self::BMP_SIZE {
+            bmp[start..].fill(boundaries.len() as u8);
+        }
+        bmp
     }
 
     /// Find sorted list of all boundaries
@@ -254,6 +287,9 @@ impl CharacterCategory {
             return CategoryType::DEFAULT;
         }
         let cint = c as u32;
+        if let Some(&idx) = self.bmp.get(cint as usize) {
+            return self.categories[idx as usize];
+        }
         match self.boundaries.binary_search(&cint) {
             //Ok means the index in boundaries, so the next category
             Ok(idx) => self.categories[idx + 1],
