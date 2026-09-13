@@ -52,19 +52,6 @@ pub struct CowArray<'a, T> {
     storage: Option<Vec<T>>,
 }
 
-impl<T: ReadLE + Clone> CowArray<'static, T> {
-    /// Creates from the owned data
-    pub fn from_owned<D: Into<Vec<T>>>(data: D) -> Self {
-        let data = data.into();
-        let slice1: &[T] = &data;
-        let slice: &'static [T] = unsafe { std::mem::transmute(slice1) };
-        Self {
-            storage: Some(data),
-            slice,
-        }
-    }
-}
-
 impl<'a, T: ReadLE + Clone> CowArray<'a, T> {
     /// Create the CowArray from bytes, reinterpreting bytes as T.
     ///

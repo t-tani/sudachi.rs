@@ -14,7 +14,6 @@
  * limitations under the License.
  */
 
-use crate::util::cow_array::CowArray;
 use std::iter::FusedIterator;
 
 #[derive(Debug, Eq, PartialEq, Clone)]
@@ -32,12 +31,47 @@ impl TrieEntry {
     }
 }
 
+/// Double array trie units, stored as little-endian u32 values
+/// in a byte buffer which is not required to be 4-byte aligned.
+///
+/// The trie is the largest part of the dictionary (tens of MB) and its position
+/// inside the dictionary file is generally not aligned, so reinterpreting it as
+/// `&[u32]` would require making a full copy of it at load time.
+/// Unaligned loads are cheap on every target we care about, so we read the
+/// units directly from the mapped bytes instead.
+#[derive(Clone, Copy)]
+struct TrieUnits<'a> {
+    bytes: &'a [u8],
+    len: usize,
+}
+
+impl<'a> TrieUnits<'a> {
+    #[inline(always)]
+    fn get(&self, index: usize) -> u32 {
+        debug_assert!(index < self.len);
+        // UB if out of bounds
+        // Should we panic in release builds here instead?
+        // Safe version is not optimized away
+        // SAFETY: bytes has at least len * 4 bytes, see Trie::new
+        let raw: [u8; 4] = unsafe {
+            self.bytes
+                .as_ptr()
+                .add(index * 4)
+                .cast::<[u8; 4]>()
+                .read_unaligned()
+        };
+        u32::from_le_bytes(raw)
+    }
+}
+
 pub struct Trie<'a> {
-    array: CowArray<'a, u32>,
+    units: TrieUnits<'a>,
+    /// Backing storage for the owned trie, `units` point into it
+    _storage: Option<Vec<u32>>,
 }
 
 pub struct TrieEntryIter<'a> {
-    trie: &'a [u32],
+    trie: TrieUnits<'a>,
     node_pos: usize,
     data: &'a [u8],
     offset: usize,
@@ -46,11 +80,7 @@ pub struct TrieEntryIter<'a> {
 impl<'a> TrieEntryIter<'a> {
     #[inline(always)]
     fn get(&self, index: usize) -> u32 {
-        debug_assert!(index < self.trie.len());
-        // UB if out of bounds
-        // Should we panic in release builds here instead?
-        // Safe version is not optimized away
-        *unsafe { self.trie.get_unchecked(index) }
+        self.trie.get(index)
     }
 }
 
@@ -87,20 +117,35 @@ impl<'a> Iterator for TrieEntryIter<'a> {
 impl FusedIterator for TrieEntryIter<'_> {}
 
 impl<'a> Trie<'a> {
+    /// Creates a trie over the first `size` units (4 bytes each) of `data`.
+    ///
+    /// Panics if `data` is too short.
     pub fn new(data: &'a [u8], size: usize) -> Trie<'a> {
+        let bytes = &data[..size * 4];
         Trie {
-            array: CowArray::from_bytes(data, 0, size),
+            units: TrieUnits { bytes, len: size },
+            _storage: None,
         }
     }
 
     pub fn new_owned(data: Vec<u32>) -> Trie<'a> {
+        // trie units are stored as little-endian in the dictionary
+        let data: Vec<u32> = data.into_iter().map(u32::to_le).collect();
+        let len = data.len();
+        // SAFETY: Vec<u32> memory is valid for len * 4 bytes.
+        // The slice points to the vector contents, which are moved into the trie
+        // and are never modified or reallocated after this point,
+        // so the 'a lifetime is sound in practice (same pattern as CowArray).
+        let bytes: &'a [u8] =
+            unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, len * 4) };
         Trie {
-            array: CowArray::from_owned(data),
+            units: TrieUnits { bytes, len },
+            _storage: Some(data),
         }
     }
 
     pub fn total_size(&self) -> usize {
-        4 * self.array.len()
+        4 * self.units.len
     }
 
     #[inline]
@@ -113,18 +158,14 @@ impl<'a> Trie<'a> {
         TrieEntryIter {
             node_pos: Trie::offset(unit),
             data: input,
-            trie: &self.array,
+            trie: self.units,
             offset,
         }
     }
 
     #[inline(always)]
     fn get(&self, index: usize) -> u32 {
-        debug_assert!(index < self.array.len());
-        // UB if out of bounds
-        // Should we panic in release builds here instead?
-        // Safe version is not optimized away
-        *unsafe { self.array.get_unchecked(index) }
+        self.units.get(index)
     }
 
     #[inline(always)]
