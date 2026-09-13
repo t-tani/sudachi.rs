@@ -6,6 +6,10 @@ Also check [python changelog](python/CHANGELOG.md).
 
 ## [Unreleased]
 
+### Added
+
+- `StatefulTokenizer::set_subset_exact` reads only the requested `WordInfo` fields without adding `SURFACE` for the accessor fallbacks, saving an allocation per morpheme for callers which take the surface from the input
+
 ### Changed
 
 - Speed up analysis: clear only the used part of the lattice on reset, look up character categories through a direct table, index MeCab OOV categories without hashing, skip Unicode table lookups for trivially normalized input, and decode word info strings with a manual UTF-16 loop
