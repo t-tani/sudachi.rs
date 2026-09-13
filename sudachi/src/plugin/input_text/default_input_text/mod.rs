@@ -18,12 +18,14 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
 use aho_corasick::{
     AhoCorasick, AhoCorasickBuilder, AhoCorasickKind, Anchored, MatchKind, StartKind,
 };
 use serde::Deserialize;
 use serde_json::Value;
+use unicode_normalization::char::canonical_combining_class;
 use unicode_normalization::{is_nfkc_quick, IsNormalized, UnicodeNormalization};
 
 use crate::config::{Config, ConfigError};
@@ -58,6 +60,57 @@ pub struct DefaultInputTextPlugin {
 #[derive(Deserialize)]
 struct PluginSettings {
     rewriteDef: Option<PathBuf>,
+}
+
+/// Bitmap over the Basic Multilingual Plane of characters which are
+/// "trivially normalized": NFKC quick check is Yes, the canonical combining
+/// class is 0 and there is no lowercase mapping.
+///
+/// A string which consists only of such characters is guaranteed to be
+/// [`IsNormalized::Yes`] for [`is_nfkc_quick`] and does not need lowercasing,
+/// so the plugin can take the fast path without consulting the (comparatively
+/// slow, binary-search based) Unicode tables for every character.
+/// Almost all characters of Japanese text belong to this set.
+struct TrivialChars {
+    bits: Box<[u64]>,
+}
+
+impl TrivialChars {
+    const BMP_SIZE: usize = 0x10000;
+
+    fn compute() -> TrivialChars {
+        let mut bits = vec![0u64; Self::BMP_SIZE / 64].into_boxed_slice();
+        for cp in 0..Self::BMP_SIZE as u32 {
+            let ch = match char::from_u32(cp) {
+                Some(ch) => ch,
+                None => continue,
+            };
+            let trivial = canonical_combining_class(ch) == 0
+                && !ch.is_uppercase()
+                && is_nfkc_quick(std::iter::once(ch)) == IsNormalized::Yes;
+            if trivial {
+                bits[(cp / 64) as usize] |= 1u64 << (cp % 64);
+            }
+        }
+        TrivialChars { bits }
+    }
+
+    fn get() -> &'static TrivialChars {
+        static INSTANCE: OnceLock<TrivialChars> = OnceLock::new();
+        INSTANCE.get_or_init(TrivialChars::compute)
+    }
+
+    /// Returns true if it is known that the character needs no normalization.
+    /// False means that the slow check is needed, not that the character
+    /// is not normalized.
+    #[inline]
+    fn is_trivial(&self, ch: char) -> bool {
+        let cp = ch as usize;
+        if cp >= Self::BMP_SIZE {
+            return false;
+        }
+        (self.bits[cp / 64] >> (cp % 64)) & 1 == 1
+    }
 }
 
 impl DefaultInputTextPlugin {
@@ -170,7 +223,10 @@ impl DefaultInputTextPlugin {
     }
 
     /// Slow case: need to handle lowercasing or NFKC normalization
-    /// Slow version needs to walk every character
+    ///
+    /// Replacements from the rewrite definition have higher priority
+    /// and are found with the automaton, exactly as in the fast case.
+    /// Characters between the replacements are normalized one by one.
     fn replace_slow<'a>(
         &'a self,
         buffer: &InputBuffer,
@@ -178,27 +234,36 @@ impl DefaultInputTextPlugin {
     ) -> SudachiResult<InputEditor<'a>> {
         let cur = buffer.current();
         let checker = self.checker.as_ref().unwrap();
+
+        let ac_input = aho_corasick::Input::new(cur).anchored(Anchored::No);
+
         let mut min_offset = 0;
+        for m in checker.find_iter(ac_input) {
+            self.normalize_slow(cur, min_offset..m.start(), &mut replacer);
+            let replacement = self.replacements[m.pattern()].as_str();
+            replacer.replace_ref(m.range(), replacement);
+            min_offset = m.end();
+        }
+        self.normalize_slow(cur, min_offset..cur.len(), &mut replacer);
 
-        let mut ac_input = aho_corasick::Input::new(cur)
-            .anchored(Anchored::Yes)
-            .earliest(true);
+        Ok(replacer)
+    }
 
-        for (offset, ch) in cur.char_indices() {
-            if offset < min_offset {
+    /// Normalize (lowercase + NFKC) characters of the byte range of `cur`
+    fn normalize_slow<'a>(
+        &'a self,
+        cur: &str,
+        range: std::ops::Range<usize>,
+        replacer: &mut InputEditor<'a>,
+    ) {
+        let trivial = TrivialChars::get();
+        let base = range.start;
+        for (rel_offset, ch) in cur[range].char_indices() {
+            if trivial.is_trivial(ch) {
                 continue;
             }
-            ac_input.set_start(offset);
-            // 1. replacement as defined by char.def
-            if let Some(m) = checker.find(ac_input.clone()) {
-                let range = m.range();
-                let replacement = self.replacements[m.pattern()].as_str();
-                min_offset = range.end;
-                replacer.replace_ref(range, replacement);
-                continue;
-            }
+            let offset = base + rel_offset;
 
-            // 2. handle normalization
             let need_lowercase = ch.is_uppercase();
             let need_nkfc =
                 !self.should_ignore(ch) && is_nfkc_quick(std::iter::once(ch)) != IsNormalized::Yes;
@@ -210,21 +275,20 @@ impl DefaultInputTextPlugin {
                 // only lowercasing
                 (true, false) => {
                     let chars = ch.to_lowercase();
-                    self.handle_normalization_slow(chars, &mut replacer, offset, ch.len_utf8(), ch)
+                    self.handle_normalization_slow(chars, replacer, offset, ch.len_utf8(), ch)
                 }
                 // only normalization
                 (false, true) => {
                     let chars = std::iter::once(ch).nfkc();
-                    self.handle_normalization_slow(chars, &mut replacer, offset, ch.len_utf8(), ch)
+                    self.handle_normalization_slow(chars, replacer, offset, ch.len_utf8(), ch)
                 }
                 // both
                 (true, true) => {
                     let chars = ch.to_lowercase().nfkc();
-                    self.handle_normalization_slow(chars, &mut replacer, offset, ch.len_utf8(), ch)
+                    self.handle_normalization_slow(chars, replacer, offset, ch.len_utf8(), ch)
                 }
             }
         }
-        Ok(replacer)
     }
 
     fn handle_normalization_slow<'a, I: Iterator<Item = char>>(
@@ -279,6 +343,14 @@ impl InputTextPlugin for DefaultInputTextPlugin {
         edit: InputEditor<'a>,
     ) -> SudachiResult<InputEditor<'a>> {
         let chars = buffer.current_chars();
+
+        // fast check first, falling back to the full Unicode tables only
+        // when there is a character which is not known to be trivial
+        let trivial = TrivialChars::get();
+        if chars.iter().all(|c| trivial.is_trivial(*c)) {
+            return self.replace_fast(buffer, edit);
+        }
+
         let need_nkfc = is_nfkc_quick(chars.iter().cloned()) != IsNormalized::Yes;
 
         let need_lowercase = chars.iter().any(|c| c.is_uppercase());
