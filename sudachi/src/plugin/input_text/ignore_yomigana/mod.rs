@@ -156,9 +156,15 @@ impl InputTextPlugin for IgnoreYomiganaPlugin {
         let regex = self.regex.as_ref().unwrap();
 
         let data = input.current();
-        for m in regex.captures_iter(data) {
-            let grp = m.get(1).unwrap(); //must be here
-            edit.replace_ref(grp.range(), "");
+        // every match contains a left bracket, so a text without one has no match
+        if !self.left_bracket_set.iter().any(|b| data.contains(*b)) {
+            return Ok(edit);
+        }
+        for m in regex.find_iter(data) {
+            // the match is a single kanji followed by the bracketed reading (group 1)
+            let kanji = data[m.start()..].chars().next().unwrap(); // match is not empty
+            let start = m.start() + kanji.len_utf8();
+            edit.replace_ref(start..m.end(), "");
         }
 
         Ok(edit)
