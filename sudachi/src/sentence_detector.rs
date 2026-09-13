@@ -114,7 +114,10 @@ impl SentenceDetector {
         }
 
         // handle at most self.limit chars at once
-        let s: String = input.chars().take(self.limit).collect();
+        let s: &str = match input.char_indices().nth(self.limit) {
+            Some((byte_idx, _)) => &input[..byte_idx],
+            None => input,
+        };
         let input_exceeds_limit = s.len() < input.len();
 
         lazy_static! {
@@ -135,7 +138,7 @@ impl SentenceDetector {
                 Regex::new(&format!("^([{}])([{}])$", ALPHABET_OR_NUMBER, DOT)).unwrap();
         }
 
-        for mat in SENTENCE_BREAKER.find_iter(&s) {
+        for mat in SENTENCE_BREAKER.find_iter(s) {
             // check if we can split at the match
             let mut eos = mat?.end();
             if parenthesis_level(&s[..eos])? > 0 {
@@ -144,10 +147,10 @@ impl SentenceDetector {
             if eos < s.len() {
                 eos += prohibited_bos(&s[eos..])?;
             }
-            if ITEMIZE_HEADER.is_match(&s)? {
+            if ITEMIZE_HEADER.is_match(s)? {
                 continue;
             }
-            if eos < s.len() && is_continuous_phrase(&s, eos)? {
+            if eos < s.len() && is_continuous_phrase(s, eos)? {
                 continue;
             }
             if let Some(ck) = checker {
@@ -163,7 +166,7 @@ impl SentenceDetector {
             lazy_static! {
                 static ref SPACES: Regex = Regex::new(".+\\s+").unwrap();
             }
-            if let Some(mat) = SPACES.find(&s)? {
+            if let Some(mat) = SPACES.find(s)? {
                 return Ok(-(mat.end() as isize));
             }
         }
