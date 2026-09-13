@@ -292,29 +292,29 @@ pub fn concat_nodes(
         return Err(SudachiError::InvalidRange(begin, end));
     }
 
-    let end_bytes = path[end - 1].end_bytes();
-    let beg_bytes = path[begin].begin_bytes();
-
-    let mut surface = String::with_capacity(end_bytes - beg_bytes);
-    let mut reading_form = String::with_capacity(end_bytes - beg_bytes);
-    let mut dictionary_form = String::with_capacity(end_bytes - beg_bytes);
-    let mut head_word_length: u16 = 0;
-
-    for node in path[begin..end].iter() {
-        let data = node.word_info().borrow_data();
-        surface.push_str(&data.surface);
-        reading_form.push_str(&data.reading_form);
-        dictionary_form.push_str(&data.dictionary_form);
-        head_word_length += data.head_word_length;
-    }
-
-    let normalized_form = normalized_form.unwrap_or_else(|| {
-        let mut norm = String::with_capacity(end_bytes - beg_bytes);
-        for node in path[begin..end].iter() {
-            norm.push_str(&node.word_info().borrow_data().normalized_form);
+    // Concatenate a field of all nodes, allocating only if there is something to store.
+    // Fields which were not requested by the subset are empty in every node.
+    let concat_field = |field: fn(&WordInfoData) -> &str| -> String {
+        let nodes = path[begin..end]
+            .iter()
+            .map(|n| field(n.word_info().borrow_data()));
+        let total: usize = nodes.clone().map(str::len).sum();
+        let mut result = String::with_capacity(total);
+        if total > 0 {
+            nodes.for_each(|s| result.push_str(s));
         }
-        norm
-    });
+        result
+    };
+
+    let surface = concat_field(|d| &d.surface);
+    let reading_form = concat_field(|d| &d.reading_form);
+    let dictionary_form = concat_field(|d| &d.dictionary_form);
+    let head_word_length: u16 = path[begin..end]
+        .iter()
+        .map(|n| n.word_info().borrow_data().head_word_length)
+        .sum();
+
+    let normalized_form = normalized_form.unwrap_or_else(|| concat_field(|d| &d.normalized_form));
 
     let pos_id = path[begin].word_info().pos_id();
 

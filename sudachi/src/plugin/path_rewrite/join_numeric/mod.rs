@@ -81,6 +81,15 @@ impl JoinNumericPlugin {
         text: &T,
         mut path: Vec<ResultNode>,
     ) -> SudachiResult<Vec<ResultNode>> {
+        // every rewrite starts at a node with the numeric part of speech,
+        // so a path without such a node stays as it is
+        if !path
+            .iter()
+            .any(|node| node.word_info().pos_id() == self.numeric_pos_id)
+        {
+            return Ok(path);
+        }
+
         let mut begin_idx = -1;
         let mut comma_as_digit = true;
         let mut period_as_digit = true;
@@ -89,9 +98,16 @@ impl JoinNumericPlugin {
         while i < path.len() as i32 - 1 {
             i += 1;
             let node = &path[i as usize];
-            let ctypes = text.cat_of_range(node.char_range());
+            let numeric_mask = CategoryType::NUMERIC | CategoryType::KANJINUMERIC;
+            // cat_of_range is the intersection over the characters, so it can
+            // intersect the mask only if the first character does
+            let ctypes = if text.cat_at_char(node.begin()).intersects(numeric_mask) {
+                text.cat_of_range(node.char_range())
+            } else {
+                CategoryType::empty()
+            };
             let s = node.word_info().normalized_form();
-            if ctypes.intersects(CategoryType::NUMERIC | CategoryType::KANJINUMERIC)
+            if ctypes.intersects(numeric_mask)
                 || (comma_as_digit && s == ",")
                 || (period_as_digit && s == ".")
             {
