@@ -43,11 +43,55 @@ const DEFAULT_CHAR_DEF_BYTES: &[u8] = include_bytes!("../../../../../resources/c
 const DEFAULT_UNK_DEF_FILE: &str = "unk.def";
 const DEFAULT_UNK_DEF_BYTES: &[u8] = include_bytes!("../../../../../resources/unk.def");
 
+/// Map from a single category (one bit of [`CategoryType`]) to a value.
+///
+/// Backed by an array indexed by the bit position, so lookups
+/// in the lattice construction are a couple of instructions instead
+/// of hashing.
+struct CategoryMap<T> {
+    data: Vec<Option<T>>,
+}
+
+impl<T> Default for CategoryMap<T> {
+    fn default() -> Self {
+        Self {
+            data: (0..u32::BITS).map(|_| None).collect(),
+        }
+    }
+}
+
+impl<T> CategoryMap<T> {
+    #[inline]
+    fn index(key: CategoryType) -> usize {
+        debug_assert_eq!(key.bits().count_ones(), 1);
+        key.bits().trailing_zeros() as usize
+    }
+
+    fn insert(&mut self, key: CategoryType, value: T) -> Option<T> {
+        self.data[Self::index(key)].replace(value)
+    }
+
+    #[inline]
+    fn get(&self, key: CategoryType) -> Option<&T> {
+        self.data[Self::index(key)].as_ref()
+    }
+}
+
+impl<T> FromIterator<(CategoryType, T)> for CategoryMap<T> {
+    fn from_iter<I: IntoIterator<Item = (CategoryType, T)>>(iter: I) -> Self {
+        let mut map = Self::default();
+        for (k, v) in iter {
+            map.insert(k, v);
+        }
+        map
+    }
+}
+
 /// provides MeCab oov nodes
 #[derive(Default)]
 pub struct MeCabOovPlugin {
-    categories: HashMap<CategoryType, CategoryInfo, RoMu>,
-    oov_list: HashMap<CategoryType, Vec<Oov>, RoMu>,
+    categories: CategoryMap<CategoryInfo>,
+    oov_list: CategoryMap<Vec<Oov>>,
 }
 
 /// Struct corresponds with raw config json file.
@@ -212,7 +256,7 @@ impl MeCabOovPlugin {
         let mut num_created = 0;
 
         for ctype in input.cat_at_char(offset).iter() {
-            let cinfo = match self.categories.get(&ctype) {
+            let cinfo = match self.categories.get(ctype) {
                 Some(ci) => ci,
                 None => continue,
             };
@@ -222,7 +266,7 @@ impl MeCabOovPlugin {
             }
 
             let mut llength = char_len;
-            let oovs = match self.oov_list.get(&cinfo.category_type) {
+            let oovs = match self.oov_list.get(cinfo.category_type) {
                 Some(v) => v,
                 None => continue,
             };
@@ -286,8 +330,8 @@ impl OovProviderPlugin for MeCabOovPlugin {
             MeCabOovPlugin::read_oov(reader, &categories, grammar, settings.userPOS)?
         };
 
-        self.categories = categories;
-        self.oov_list = oov_list;
+        self.categories = categories.into_iter().collect();
+        self.oov_list = oov_list.into_iter().collect();
 
         Ok(())
     }
