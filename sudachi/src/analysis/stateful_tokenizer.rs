@@ -102,6 +102,29 @@ impl<D: DictionaryAccess> StatefulTokenizer<D> {
         std::mem::replace(&mut self.subset, new_subset | mode_subset)
     }
 
+    /// Analyzer will read only the given [`WordInfo`] field subset
+    /// (plus the fields required by the split mode) and nothing else.
+    ///
+    /// Unlike [`StatefulTokenizer::set_subset`], `SURFACE` is not added
+    /// when `NORMALIZED_FORM` or `READING_FORM` are requested.
+    /// This saves a string allocation for every morpheme, but the
+    /// [`WordInfo`] accessors of these forms then return an empty string instead
+    /// of the surface when the dictionary has no separate value for the field.
+    /// Callers should read [`WordInfo::borrow_data`] and treat empty
+    /// forms as equal to the surface of the morpheme.
+    pub fn set_subset_exact(&mut self, subset: InfoSubset) -> InfoSubset {
+        let mode_subset = match self.mode {
+            Mode::A => InfoSubset::SPLIT_A,
+            Mode::B => InfoSubset::SPLIT_B,
+            _ => InfoSubset::empty(),
+        };
+        let mut new_subset = subset | mode_subset;
+        if new_subset.intersects(InfoSubset::SPLIT_A | InfoSubset::SPLIT_B) {
+            new_subset |= InfoSubset::HEAD_WORD_LENGTH;
+        }
+        std::mem::replace(&mut self.subset, new_subset)
+    }
+
     /// Prepare StatefulTokenizer for the next data.
     /// Data must be written in the returned reference.
     pub fn reset(&mut self) -> &mut String {

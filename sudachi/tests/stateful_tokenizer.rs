@@ -191,3 +191,35 @@ fn morpheme_extraction() {
     assert_eq!(0, e.begin_c());
     assert_eq!(3, e.end_c());
 }
+
+#[test]
+fn subset_exact_does_not_add_surface() {
+    use sudachi::dic::subset::InfoSubset;
+
+    let mut tok = TestTokenizer::new_built(Mode::C);
+    tok.tok
+        .set_subset(InfoSubset::POS_ID | InfoSubset::NORMALIZED_FORM);
+    let ms = tok.tokenize("行った");
+    assert_eq!(2, ms.len());
+    // set_subset adds SURFACE, so the accessors fall back to it
+    assert_eq!("行く", ms.get(0).normalized_form());
+    assert_eq!("た", ms.get(1).normalized_form());
+    assert_eq!("た", ms.get(1).get_word_info().surface());
+
+    tok.tok
+        .set_subset_exact(InfoSubset::POS_ID | InfoSubset::NORMALIZED_FORM);
+    let ms = tok.tokenize("行った");
+    assert_eq!(2, ms.len());
+    // the normalized form is read when the dictionary has one
+    assert_eq!("行く", ms.get(0).normalized_form());
+    assert_eq!(
+        "行く",
+        ms.get(0).get_word_info().borrow_data().normalized_form
+    );
+    // otherwise the field is empty and there is no surface to fall back to
+    assert_eq!("", ms.get(1).get_word_info().borrow_data().normalized_form);
+    assert_eq!("", ms.get(1).get_word_info().surface());
+    assert_eq!("", ms.get(1).normalized_form());
+    // the surface of the input is still available
+    assert_eq!("た", ms.get(1).surface().deref());
+}
