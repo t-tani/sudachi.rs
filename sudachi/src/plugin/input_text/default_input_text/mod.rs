@@ -333,27 +333,23 @@ impl InputTextPlugin for DefaultInputTextPlugin {
         Ok(())
     }
 
-    fn uses_chars(&self) -> bool {
-        true
-    }
-
     fn rewrite_impl<'a>(
         &'a self,
         buffer: &InputBuffer,
         edit: InputEditor<'a>,
     ) -> SudachiResult<InputEditor<'a>> {
-        let chars = buffer.current_chars();
+        let cur = buffer.current();
 
         // fast check first, falling back to the full Unicode tables only
         // when there is a character which is not known to be trivial
         let trivial = TrivialChars::get();
-        if chars.iter().all(|c| trivial.is_trivial(*c)) {
+        if cur.chars().all(|c| trivial.is_trivial(c)) {
             return self.replace_fast(buffer, edit);
         }
 
-        let need_nkfc = is_nfkc_quick(chars.iter().cloned()) != IsNormalized::Yes;
+        let need_nkfc = is_nfkc_quick(cur.chars()) != IsNormalized::Yes;
 
-        let need_lowercase = chars.iter().any(|c| c.is_uppercase());
+        let need_lowercase = cur.chars().any(|c| c.is_uppercase());
 
         if need_nkfc || need_lowercase {
             self.replace_slow(buffer, edit)
