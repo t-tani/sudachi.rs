@@ -15,6 +15,7 @@ Also check [python changelog](python/CHANGELOG.md).
 - Speed up analysis: clear only the used part of the lattice on reset, look up character categories through a direct table, index MeCab OOV categories without hashing, skip Unicode table lookups for trivially normalized input, and decode word info strings with a manual UTF-16 loop
 - Read the trie directly from the dictionary bytes instead of copying it on load (27.5 MB less heap with SudachiDict core)
 - Sentence detector no longer copies the input on every boundary search
+- Input text and numeric join plugins skip work which cannot change the result: no character vector for the normalization check, no yomigana search without brackets, no numeric join pass without numerals
 
 ## [0.6.11](https://github.com/WorksApplications/sudachi.rs/releases/tag/v0.6.11) (2026-03-06)
 
